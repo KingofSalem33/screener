@@ -22,11 +22,38 @@ INDUSTRY_BENCHMARKS = {
     'dividend_yield': {'mean': 1.8, 'std': 2.1}
 }
 
-def normalize_to_percentile(value, mean, std, lower_is_better=False):
-    """Convert raw value to 0-100 percentile using industry benchmarks"""
+def normalize_to_percentile(value, mean, std, lower_is_better=False, metric_type=None):
+    """Convert raw value to 0-100 percentile using industry benchmarks
+
+    Args:
+        value: Raw metric value
+        mean: Industry average
+        std: Industry standard deviation
+        lower_is_better: Whether lower values are better (for valuation ratios)
+        metric_type: Type of metric for special handling ('earnings', 'growth', 'margin', 'ratio')
+    """
     if value is None or pd.isna(value):
         return None
 
+    # Special handling for negative earnings-related metrics
+    if metric_type in ['earnings', 'growth'] and value < 0:
+        # Map negative earnings/growth to 5th percentile (poor performance)
+        return 5.0
+
+    # Special handling for negative margins
+    if metric_type == 'margin' and value < 0:
+        # Map negative margins to 10th percentile (very poor performance)
+        return 10.0
+
+    # Special handling for invalid ratios (negative earnings making P/E invalid)
+    if metric_type == 'ratio' and (value <= 0 or value > 1000):  # Extreme or invalid ratios
+        if lower_is_better:
+            # For valuation ratios, extreme values indicate poor value (high percentile = bad)
+            return 5.0  # Map to 5th percentile (good value score since lower is better)
+        else:
+            return 10.0  # Map to 10th percentile for other ratios
+
+    # Normal calculation for valid values
     # Calculate z-score
     z_score = (value - mean) / std
 
@@ -208,18 +235,21 @@ def calculate_ovp(ticker):
     # Step 2: Normalize metrics and calculate FPR and NVR
     print("\nStep 2: Normalizing metrics and calculating ratings...")
 
-    # Normalize FPR components
+    # Normalize FPR components with proper metric type handling
     eps_n = normalize_to_percentile(metrics['eps_growth'],
                                    INDUSTRY_BENCHMARKS['eps_growth']['mean'],
-                                   INDUSTRY_BENCHMARKS['eps_growth']['std'])
+                                   INDUSTRY_BENCHMARKS['eps_growth']['std'],
+                                   metric_type='growth')
 
     rev_n = normalize_to_percentile(metrics['revenue_growth'],
                                    INDUSTRY_BENCHMARKS['revenue_growth']['mean'],
-                                   INDUSTRY_BENCHMARKS['revenue_growth']['std'])
+                                   INDUSTRY_BENCHMARKS['revenue_growth']['std'],
+                                   metric_type='growth')
 
     opmargin_n = normalize_to_percentile(metrics['operating_margin'],
                                         INDUSTRY_BENCHMARKS['operating_margin']['mean'],
-                                        INDUSTRY_BENCHMARKS['operating_margin']['std'])
+                                        INDUSTRY_BENCHMARKS['operating_margin']['std'],
+                                        metric_type='margin')
 
     de_n = normalize_to_percentile(metrics['debt_to_equity'],
                                   INDUSTRY_BENCHMARKS['debt_to_equity']['mean'],
@@ -228,7 +258,8 @@ def calculate_ovp(ticker):
 
     roic_n = normalize_to_percentile(metrics['roic'],
                                     INDUSTRY_BENCHMARKS['roic']['mean'],
-                                    INDUSTRY_BENCHMARKS['roic']['std'])
+                                    INDUSTRY_BENCHMARKS['roic']['std'],
+                                    metric_type='earnings')
 
     # Calculate FPR
     fpr_components = [
@@ -251,26 +282,30 @@ def calculate_ovp(ticker):
     else:
         fpr = 0
 
-    # Normalize NVR components
+    # Normalize NVR components with proper metric type handling
     pe_n = normalize_to_percentile(metrics['pe_ratio'],
                                   INDUSTRY_BENCHMARKS['pe_ratio']['mean'],
                                   INDUSTRY_BENCHMARKS['pe_ratio']['std'],
-                                  lower_is_better=True)
+                                  lower_is_better=True,
+                                  metric_type='ratio')
 
     ps_n = normalize_to_percentile(metrics['ps_ratio'],
                                   INDUSTRY_BENCHMARKS['ps_ratio']['mean'],
                                   INDUSTRY_BENCHMARKS['ps_ratio']['std'],
-                                  lower_is_better=True)
+                                  lower_is_better=True,
+                                  metric_type='ratio')
 
     pb_n = normalize_to_percentile(metrics['pb_ratio'],
                                   INDUSTRY_BENCHMARKS['pb_ratio']['mean'],
                                   INDUSTRY_BENCHMARKS['pb_ratio']['std'],
-                                  lower_is_better=True)
+                                  lower_is_better=True,
+                                  metric_type='ratio')
 
     evebitda_n = normalize_to_percentile(metrics['ev_ebitda'],
                                         INDUSTRY_BENCHMARKS['ev_ebitda']['mean'],
                                         INDUSTRY_BENCHMARKS['ev_ebitda']['std'],
-                                        lower_is_better=True)
+                                        lower_is_better=True,
+                                        metric_type='ratio')
 
     div_n = normalize_to_percentile(metrics['dividend_yield'],
                                    INDUSTRY_BENCHMARKS['dividend_yield']['mean'],
@@ -327,18 +362,33 @@ def calculate_ovp(ticker):
 
     print(f"Interpretation: {interpretation}")
 
+    # Check for negative earnings handling
+    negative_metrics = []
+    if metrics['eps_growth'] and metrics['eps_growth'] < 0:
+        negative_metrics.append("EPS Growth")
+    if metrics['revenue_growth'] and metrics['revenue_growth'] < 0:
+        negative_metrics.append("Revenue Growth")
+    if metrics['operating_margin'] and metrics['operating_margin'] < 0:
+        negative_metrics.append("Operating Margin")
+    if metrics['pe_ratio'] and (metrics['pe_ratio'] <= 0 or metrics['pe_ratio'] > 1000):
+        negative_metrics.append("P/E Ratio")
+
+    if negative_metrics:
+        print(f"\nNote: Negative/invalid metrics detected: {', '.join(negative_metrics)}")
+        print("These have been mapped to 5th-10th percentile to reflect poor performance without distortion.")
+
     # Show raw metrics for transparency
     print(f"\n=== RAW FINANCIAL METRICS ===")
-    print(f"EPS Growth (YoY): {metrics['eps_growth']:.2f}%" if metrics['eps_growth'] else "EPS Growth: N/A")
-    print(f"Revenue Growth (YoY): {metrics['revenue_growth']:.2f}%" if metrics['revenue_growth'] else "Revenue Growth: N/A")
-    print(f"Operating Margin: {metrics['operating_margin']:.2f}%" if metrics['operating_margin'] else "Operating Margin: N/A")
-    print(f"Debt-to-Equity: {metrics['debt_to_equity']:.2f}" if metrics['debt_to_equity'] else "Debt-to-Equity: N/A")
-    print(f"ROIC: {metrics['roic']:.2f}%" if metrics['roic'] else "ROIC: N/A")
-    print(f"P/E Ratio: {metrics['pe_ratio']:.2f}" if metrics['pe_ratio'] else "P/E Ratio: N/A")
-    print(f"P/S Ratio: {metrics['ps_ratio']:.2f}" if metrics['ps_ratio'] else "P/S Ratio: N/A")
-    print(f"P/B Ratio: {metrics['pb_ratio']:.2f}" if metrics['pb_ratio'] else "P/B Ratio: N/A")
-    print(f"EV/EBITDA: {metrics['ev_ebitda']:.2f}" if metrics['ev_ebitda'] else "EV/EBITDA: N/A")
-    print(f"Dividend Yield: {metrics['dividend_yield']:.2f}%" if metrics['dividend_yield'] else "Dividend Yield: 0.00%")
+    print(f"EPS Growth (YoY): {metrics['eps_growth']:.2f}%" if metrics['eps_growth'] is not None else "EPS Growth: N/A")
+    print(f"Revenue Growth (YoY): {metrics['revenue_growth']:.2f}%" if metrics['revenue_growth'] is not None else "Revenue Growth: N/A")
+    print(f"Operating Margin: {metrics['operating_margin']:.2f}%" if metrics['operating_margin'] is not None else "Operating Margin: N/A")
+    print(f"Debt-to-Equity: {metrics['debt_to_equity']:.2f}" if metrics['debt_to_equity'] is not None else "Debt-to-Equity: N/A")
+    print(f"ROIC: {metrics['roic']:.2f}%" if metrics['roic'] is not None else "ROIC: N/A")
+    print(f"P/E Ratio: {metrics['pe_ratio']:.2f}" if metrics['pe_ratio'] is not None else "P/E Ratio: N/A")
+    print(f"P/S Ratio: {metrics['ps_ratio']:.2f}" if metrics['ps_ratio'] is not None else "P/S Ratio: N/A")
+    print(f"P/B Ratio: {metrics['pb_ratio']:.2f}" if metrics['pb_ratio'] is not None else "P/B Ratio: N/A")
+    print(f"EV/EBITDA: {metrics['ev_ebitda']:.2f}" if metrics['ev_ebitda'] is not None else "EV/EBITDA: N/A")
+    print(f"Dividend Yield: {metrics['dividend_yield']:.2f}%" if metrics['dividend_yield'] is not None else "Dividend Yield: 0.00%")
 
     return {
         'ticker': ticker,
