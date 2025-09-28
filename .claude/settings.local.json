@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Read(//c/Users/coryh/**)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(findstr:*)",
+      "Bash(curl \"https://financialmodelingprep.com/api/v3/profile/AAPL?apikey=eiVcr0EhatmV9aGUeSGTaSTvnlC4ihdq\")",
+      "Bash(curl \"https://financialmodelingprep.com/api/v4/income-statement?symbol=AAPL&apikey=eiVcr0EhatmV9aGUeSGTaSTvnlC4ihdq\")",
+      "Bash(pip search:*)",
+      "WebSearch",
+      "WebFetch(domain:www.roic.ai)",
+      "WebFetch(domain:roic.gitbook.io)",
+      "Bash(curl -s \"https://api.roic.ai/v2/company/profile/AAPL\")",
+      "Bash(curl -s \"https://api.roic.ai/v2/fundamental/income-statement/AAPL\")",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []
