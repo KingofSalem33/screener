@@ -5,8 +5,9 @@ import json
 from datetime import datetime
 from scipy import stats
 
-# ROIC.ai API configuration
-ROIC_BASE_URL = "https://api.roic.ai/v2"
+# Financial Modeling Prep API configuration
+FMP_API_KEY = "eiVcr0EhatmV9aGUeSGTaSTvnlC4ihdq"  # Legacy key - get new free key from FMP website
+FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 
 # Industry averages and standard deviations for normalization (Technology sector baseline)
 INDUSTRY_BENCHMARKS = {
@@ -67,26 +68,35 @@ def normalize_to_percentile(value, mean, std, lower_is_better=False, metric_type
     # Clip to 0-100 range
     return max(0, min(100, percentile))
 
-def get_roic_data(ticker):
-    """Fetch comprehensive financial data from ROIC.ai"""
+def get_fmp_data(ticker):
+    """Fetch comprehensive financial data from Financial Modeling Prep"""
     try:
         # Get company profile
-        profile_url = f"{ROIC_BASE_URL}/company/profile/{ticker}"
+        profile_url = f"{FMP_BASE_URL}/profile/{ticker}?apikey={FMP_API_KEY}"
         profile_response = requests.get(profile_url)
-        profile_data = profile_response.json()[0] if profile_response.status_code == 200 else None
 
-        # Get income statement (quarterly data)
-        income_url = f"{ROIC_BASE_URL}/fundamental/income-statement/{ticker}"
+        if profile_response.status_code == 200:
+            profile_json = profile_response.json()
+            if isinstance(profile_json, dict) and 'Error Message' in profile_json:
+                print(f"FMP Error: {profile_json['Error Message']}")
+                print("Please get a new free API key from: https://site.financialmodelingprep.com/developer/docs")
+                return None
+            profile_data = profile_json[0] if profile_json else None
+        else:
+            profile_data = None
+
+        # Get income statement (quarterly data - latest 8 quarters)
+        income_url = f"{FMP_BASE_URL}/income-statement/{ticker}?period=quarter&limit=8&apikey={FMP_API_KEY}"
         income_response = requests.get(income_url)
         income_data = income_response.json() if income_response.status_code == 200 else None
 
-        # Get balance sheet
-        balance_url = f"{ROIC_BASE_URL}/fundamental/balance-sheet/{ticker}"
+        # Get balance sheet (quarterly data - latest 4 quarters)
+        balance_url = f"{FMP_BASE_URL}/balance-sheet-statement/{ticker}?period=quarter&limit=4&apikey={FMP_API_KEY}"
         balance_response = requests.get(balance_url)
         balance_data = balance_response.json() if balance_response.status_code == 200 else None
 
-        # Get cash flow
-        cashflow_url = f"{ROIC_BASE_URL}/fundamental/cash-flow/{ticker}"
+        # Get cash flow (quarterly data - latest 4 quarters)
+        cashflow_url = f"{FMP_BASE_URL}/cash-flow-statement/{ticker}?period=quarter&limit=4&apikey={FMP_API_KEY}"
         cashflow_response = requests.get(cashflow_url)
         cashflow_data = cashflow_response.json() if cashflow_response.status_code == 200 else None
 
@@ -101,7 +111,7 @@ def get_roic_data(ticker):
         return None
 
 def calculate_metrics(data):
-    """Extract and calculate all required financial metrics"""
+    """Extract and calculate all required financial metrics from FMP data"""
     if not data or not data['profile'] or not data['income']:
         return None
 
@@ -110,9 +120,10 @@ def calculate_metrics(data):
     balance_sheets = data['balance'] if data['balance'] else []
     cashflows = data['cashflow'] if data['cashflow'] else []
 
-    # Get latest quarterly data
+    # Get latest quarterly data (FMP returns most recent first)
     latest_quarter = income_statements[0]
-    prev_year_quarter = income_statements[1] if len(income_statements) > 1 else None
+    # For YoY comparison, find same quarter from previous year (4 quarters back)
+    prev_year_quarter = income_statements[4] if len(income_statements) > 4 else None
 
     metrics = {}
 
@@ -130,8 +141,8 @@ def calculate_metrics(data):
 
     # 2. Revenue Growth (YoY %)
     if prev_year_quarter:
-        current_rev = latest_quarter.get('is_sales_revenue_turnover', 0)
-        prev_rev = prev_year_quarter.get('is_sales_revenue_turnover', 0)
+        current_rev = latest_quarter.get('revenue', 0)
+        prev_rev = prev_year_quarter.get('revenue', 0)
         if prev_rev != 0:
             metrics['revenue_growth'] = ((current_rev - prev_rev) / abs(prev_rev)) * 100
         else:
@@ -139,21 +150,32 @@ def calculate_metrics(data):
     else:
         metrics['revenue_growth'] = None
 
-    # 3. Operating Margin (%) - TTM from latest data
-    metrics['operating_margin'] = latest_quarter.get('oper_margin', None)
+    # 3. Operating Margin (%) - Calculate from latest quarter
+    revenue = latest_quarter.get('revenue', 0)
+    operating_income = latest_quarter.get('operatingIncome', 0)
+    if revenue > 0 and operating_income is not None:
+        metrics['operating_margin'] = (operating_income / revenue) * 100
+    else:
+        metrics['operating_margin'] = None
 
-    # 4. Debt-to-Equity Ratio - MRQ
+    # 4. Debt-to-Equity Ratio - Calculate from most recent balance sheet
     if balance_sheets:
-        metrics['debt_to_equity'] = balance_sheets[0].get('net_debt_to_shrhldr_eqy', None)
+        total_debt = balance_sheets[0].get('totalDebt', 0)
+        total_equity = balance_sheets[0].get('totalStockholdersEquity', 0)
+        if total_equity > 0:
+            metrics['debt_to_equity'] = total_debt / total_equity
+        else:
+            metrics['debt_to_equity'] = None
     else:
         metrics['debt_to_equity'] = None
 
-    # 5. ROIC (%) - Estimate from available data
-    if balance_sheets and latest_quarter.get('is_oper_income'):
-        total_equity = balance_sheets[0].get('bs_total_equity', 0)
-        total_debt = balance_sheets[0].get('net_debt', 0)
+    # 5. ROIC (%) - Calculate from available data
+    if balance_sheets and operating_income:
+        total_equity = balance_sheets[0].get('totalStockholdersEquity', 0)
+        total_debt = balance_sheets[0].get('totalDebt', 0)
         invested_capital = total_equity + total_debt
-        nopat = latest_quarter.get('is_oper_income', 0) * 0.79  # Assume 21% tax rate
+        # Estimate NOPAT (assume 25% tax rate)
+        nopat = operating_income * 0.75
         if invested_capital > 0:
             metrics['roic'] = (nopat / invested_capital) * 100
         else:
@@ -163,50 +185,41 @@ def calculate_metrics(data):
 
     # NVR Metrics
     current_price = profile.get('price', 0)
+    market_cap = profile.get('mktCap', 0)
 
-    # 6. P/E Ratio (TTM)
-    current_eps = latest_quarter.get('eps', 0)
-    if current_eps > 0 and current_price > 0:
-        metrics['pe_ratio'] = current_price / current_eps
-    else:
-        metrics['pe_ratio'] = None
+    # 6. P/E Ratio (TTM) - Use profile data or calculate
+    pe_ratio = profile.get('pe', None)
+    if not pe_ratio and current_price > 0:
+        current_eps = latest_quarter.get('eps', 0)
+        if current_eps > 0:
+            pe_ratio = current_price / current_eps
+    metrics['pe_ratio'] = pe_ratio
 
-    # 7. P/S Ratio (TTM)
-    if balance_sheets and current_price > 0:
-        shares_out = balance_sheets[0].get('bs_sh_out', 0)
-        revenue = latest_quarter.get('is_sales_revenue_turnover', 0)
-        if shares_out > 0 and revenue > 0:
-            revenue_per_share = revenue / shares_out
-            metrics['ps_ratio'] = current_price / revenue_per_share
-        else:
-            metrics['ps_ratio'] = None
+    # 7. P/S Ratio (TTM) - Calculate using market cap and TTM revenue
+    # Sum last 4 quarters for TTM revenue
+    ttm_revenue = sum([q.get('revenue', 0) for q in income_statements[:4]])
+    if market_cap > 0 and ttm_revenue > 0:
+        metrics['ps_ratio'] = market_cap / ttm_revenue
     else:
         metrics['ps_ratio'] = None
 
-    # 8. P/B Ratio (MRQ)
-    if balance_sheets and current_price > 0:
-        book_value = balance_sheets[0].get('bs_total_equity', 0)
-        shares_out = balance_sheets[0].get('bs_sh_out', 0)
-        if shares_out > 0 and book_value > 0:
-            book_value_per_share = book_value / shares_out
-            metrics['pb_ratio'] = current_price / book_value_per_share
-        else:
-            metrics['pb_ratio'] = None
-    else:
-        metrics['pb_ratio'] = None
+    # 8. P/B Ratio (MRQ) - Use profile data
+    metrics['pb_ratio'] = profile.get('priceToBook', None)
 
     # 9. EV/EBITDA (TTM)
-    market_cap = current_price * balance_sheets[0].get('bs_sh_out', 0) if balance_sheets else 0
-    net_debt = balance_sheets[0].get('net_debt', 0) if balance_sheets else 0
+    # Calculate Enterprise Value
+    net_debt = balance_sheets[0].get('netDebt', 0) if balance_sheets else 0
     enterprise_value = market_cap + net_debt
-    ebitda = latest_quarter.get('ebitda', 0)
-    if ebitda > 0 and enterprise_value > 0:
-        metrics['ev_ebitda'] = enterprise_value / ebitda
+
+    # Sum last 4 quarters for TTM EBITDA
+    ttm_ebitda = sum([q.get('ebitda', 0) for q in income_statements[:4]])
+    if ttm_ebitda > 0 and enterprise_value > 0:
+        metrics['ev_ebitda'] = enterprise_value / ttm_ebitda
     else:
         metrics['ev_ebitda'] = None
 
     # 10. Dividend Yield (%)
-    metrics['dividend_yield'] = profile.get('dividend_yield', 0) * 100 if profile.get('dividend_yield') else 0
+    metrics['dividend_yield'] = profile.get('lastDiv', 0) / current_price * 100 if current_price > 0 else 0
 
     return metrics
 
@@ -217,8 +230,8 @@ def calculate_ovp(ticker):
     print(f"Date: {datetime.now().strftime('%Y-%m-%d')}")
 
     # Step 1: Fetch latest earnings data
-    print("\nStep 1: Fetching latest quarterly earnings data...")
-    data = get_roic_data(ticker)
+    print("\nStep 1: Fetching latest quarterly earnings data from FMP...")
+    data = get_fmp_data(ticker)
 
     if not data:
         print(f"Error: Could not fetch data for {ticker}")
@@ -400,6 +413,14 @@ def calculate_ovp(ticker):
     }
 
 if __name__ == "__main__":
+    # NOTE: You need to get a new free API key from FMP
+    # Visit: https://site.financialmodelingprep.com/developer/docs
+    # Sign up for free account and replace the API key above
+
     # Example usage
     ticker = "AAPL"
+    print("NOTE: If you see API errors, please get a new free API key from:")
+    print("https://site.financialmodelingprep.com/developer/docs")
+    print("Then update the FMP_API_KEY variable in this file.\n")
+
     result = calculate_ovp(ticker)
